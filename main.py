@@ -35,70 +35,80 @@ def process_video(
     out_file = f"/tmp/output_{job_id}.mp4"
 
     try:
-        # Download source video
-        r = requests.get(video_url, stream=True, timeout=600)
+        # 1. Download source video with headers to avoid anti-bot blocks
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(video_url, headers=headers, stream=True, timeout=600)
         with open(in_file, 'wb') as f:
             for chunk in r.iter_content(chunk_size=2*1024*1024):
                 if chunk:
                     f.write(chunk)
 
         if not text:
-            # If no watermark text provided, return original
             return FileResponse(in_file, media_type="video/mp4", filename=f"video_{job_id}.mp4")
 
-        # Color & Opacity
-        alpha_hex = hex(int(opacity * 255))[2:].zfill(2)
-        font_color = f"0x{color}{alpha_hex}"
+        # 2. Color & Opacity
+        clean_color = color.replace('#', '')
+        font_color = f"0x{clean_color}@{opacity}"
 
-        # Font mapping
-        font_file_arg = ""
-        if font_family == "Bold Heavy":
-            font_file_arg = ":font='DejaVu Sans':fontweight=bold"
-        elif font_family == "Cinematic Serif":
-            font_file_arg = ":font='DejaVu Serif'"
-        elif font_family == "Digital LED":
-            font_file_arg = ":font='DejaVu Sans Mono'"
-
-        # Base Position Coords
-        pos_coords = {
-            "center": "x=(w-text_w)/2:y=(h-text_h)/2",
-            "south_east": "x=w-text_w-30:y=h-text_h-30",
-            "south_west": "x=30:y=h-text_h-30",
-            "north_east": "x=w-text_w-30:y=30",
-            "north_west": "x=30:y=30",
-            "north": "x=(w-text_w)/2:y=30",
-            "south": "x=(w-text_w)/2:y=h-text_h-30"
-        }
-        xy_str = pos_coords.get(position, "x=(w-text_w)/2:y=(h-text_h)/2")
-
-        # Motion & Animation handling
+        # 3. Position & Motion Logic (Safe Math Expressions without nested quotes)
         if motion == "bottom_ticker":
-            xy_str = "x=w-mod(t*180\\,w+text_w):y=h-text_h-18"
+            x_expr = "w-mod(t*160,w+text_w)"
+            y_expr = "h-text_h-20"
         elif motion == "diagonal_move":
-            xy_str = "x=w-text_w-mod(t*45\\,w):y=h-text_h-mod(t*30\\,h)"
+            x_expr = "w-text_w-mod(t*50,w)"
+            y_expr = "h-text_h-mod(t*35,h)"
         elif motion == "random":
-            xy_str = "x='if(eq(mod(floor(t/5),2),0),30,w-text_w-30)':y='if(eq(mod(floor(t/10),2),0),30,h-text_h-30)'"
+            # Swaps position safely every 6 seconds
+            x_expr = "if(eq(mod(floor(t/6),2),0),40,w-text_w-40)"
+            y_expr = "if(eq(mod(floor(t/12),2),0),40,h-text_h-40)"
+        else:
+            # Static Positions
+            pos_dict = {
+                "center": ("(w-text_w)/2", "(h-text_h)/2"),
+                "south_east": ("w-text_w-30", "h-text_h-30"),
+                "south_west": ("30", "h-text_h-30"),
+                "north_east": ("w-text_w-30", "30"),
+                "north_west": ("30", "30"),
+                "north": ("(w-text_w)/2", "30"),
+                "south": ("(w-text_w)/2", "h-text_h-30")
+            }
+            x_expr, y_expr = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
 
-        # Style / Outline / Box handling
-        style_args = ""
+        # 4. Style Logic
+        style_parts = []
         if style == "shadow":
-            style_args = ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
+            style_parts = ["shadowcolor=black@0.9", "shadowx=3", "shadowy=3"]
         elif style == "outline":
-            style_args = ":bordercolor=black:borderw=3"
+            style_parts = ["bordercolor=black", "borderw=3"]
         elif style == "box_dark":
-            style_args = ":box=1:boxcolor=black@0.65:boxborderw=8"
+            style_parts = ["box=1", "boxcolor=black@0.65", "boxborderw=8"]
         elif style == "box_light":
-            style_args = ":box=1:boxcolor=white@0.8:boxborderw=8"
+            style_parts = ["box=1", "boxcolor=white@0.8", "boxborderw=8"]
 
-        # Safe string formatting for FFmpeg
-        safe_text = text.replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+        # Safe text escaping for FFmpeg drawtext
+        escaped_text = text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:").replace("%", "\\%")
 
-        drawtext_filter = f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor={font_color}{font_file_arg}:{xy_str}{style_args}"
+        # Filter string assembly
+        filter_params = [
+            f"text='{escaped_text}'",
+            f"fontsize={font_size}",
+            f"fontcolor={font_color}",
+            f"x={x_expr}",
+            f"y={y_expr}"
+        ] + style_parts
 
-        # Video compression option
-        encoding_args = ["-c:v", "libx264", "-crf", "28", "-preset", "faster"] if auto_compress else ["-c:v", "libx264", "-crf", "22", "-preset", "veryfast"]
+        drawtext_filter = "drawtext=" + ":".join(filter_params)
 
-        cmd = ["ffmpeg", "-y", "-i", in_file, "-vf", drawtext_filter] + encoding_args + ["-c:a", "copy", out_file]
+        # 5. Fast Encoding & Pixel Format Settings
+        encoding_opts = [
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "ultrafast",
+            "-crf", "28" if auto_compress else "22",
+            "-c:a", "copy"
+        ]
+
+        cmd = ["ffmpeg", "-y", "-i", in_file, "-vf", drawtext_filter] + encoding_opts + [out_file]
         subprocess.run(cmd, check=True)
 
         if os.path.exists(in_file):
