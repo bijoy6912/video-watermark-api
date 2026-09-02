@@ -35,7 +35,6 @@ def process_video(
     out_file = f"/tmp/output_{job_id}.mp4"
 
     try:
-        # 1. Download source video with headers to avoid anti-bot blocks
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(video_url, headers=headers, stream=True, timeout=600)
         with open(in_file, 'wb') as f:
@@ -46,21 +45,22 @@ def process_video(
         if not text:
             return FileResponse(in_file, media_type="video/mp4", filename=f"video_{job_id}.mp4")
 
-        # 2. Color & Opacity
+        # Hex Color with Alpha
         clean_color = color.replace('#', '')
-        font_color = f"0x{clean_color}@{opacity}"
+        alpha_hex = format(int(opacity * 255), '02x')
+        font_color = f"0x{clean_color}{alpha_hex}"
 
-        # 3. Position & Motion Logic (Safe Math Expressions without nested quotes)
+        # Position & Motion Formulas (with properly escaped commas for FFmpeg)
         if motion == "bottom_ticker":
-            x_expr = "w-mod(t*160,w+text_w)"
+            x_expr = "w-mod(t*160\\,w+text_w)"
             y_expr = "h-text_h-20"
         elif motion == "diagonal_move":
-            x_expr = "w-text_w-mod(t*50,w)"
-            y_expr = "h-text_h-mod(t*35,h)"
+            x_expr = "w-text_w-mod(t*50\\,w)"
+            y_expr = "h-text_h-mod(t*35\\,h)"
         elif motion == "random":
-            # Swaps position safely every 6 seconds
-            x_expr = "if(eq(mod(floor(t/6),2),0),40,w-text_w-40)"
-            y_expr = "if(eq(mod(floor(t/12),2),0),40,h-text_h-40)"
+            # Bounces position across corners cleanly
+            x_expr = "if(mod(floor(t/6)\\,2)\\,40\\,w-text_w-40)"
+            y_expr = "if(mod(floor(t/12)\\,2)\\,40\\,h-text_h-40)"
         else:
             # Static Positions
             pos_dict = {
@@ -74,32 +74,25 @@ def process_video(
             }
             x_expr, y_expr = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
 
-        # 4. Style Logic
-        style_parts = []
+        # Style Options
+        style_opts = ""
         if style == "shadow":
-            style_parts = ["shadowcolor=black@0.9", "shadowx=3", "shadowy=3"]
+            style_opts = ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
         elif style == "outline":
-            style_parts = ["bordercolor=black", "borderw=3"]
+            style_opts = ":bordercolor=black:borderw=3"
         elif style == "box_dark":
-            style_parts = ["box=1", "boxcolor=black@0.65", "boxborderw=8"]
+            style_opts = ":box=1:boxcolor=black@0.65:boxborderw=8"
         elif style == "box_light":
-            style_parts = ["box=1", "boxcolor=white@0.8", "boxborderw=8"]
+            style_opts = ":box=1:boxcolor=white@0.8:boxborderw=8"
 
-        # Safe text escaping for FFmpeg drawtext
-        escaped_text = text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:").replace("%", "\\%")
+        # Safe Escaped Text
+        safe_text = text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:").replace("%", "\\%")
 
-        # Filter string assembly
-        filter_params = [
-            f"text='{escaped_text}'",
-            f"fontsize={font_size}",
-            f"fontcolor={font_color}",
-            f"x={x_expr}",
-            f"y={y_expr}"
-        ] + style_parts
+        # Use Installed System Font Path
+        fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        
+        drawtext_filter = f"drawtext=fontfile='{fontfile_path}':text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:x={x_expr}:y={y_expr}{style_opts}"
 
-        drawtext_filter = "drawtext=" + ":".join(filter_params)
-
-        # 5. Fast Encoding & Pixel Format Settings
         encoding_opts = [
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
