@@ -28,7 +28,8 @@ def process_video(
     position: str = Query("center"),
     style: str = Query("shadow"),
     effect: str = Query("static"),
-    auto_compress: bool = Query(False)
+    auto_compress: bool = Query(False),
+    download: bool = Query(False)  # नया पैरामीटर: Preview vs Download के लिए
 ):
     job_id = str(uuid.uuid4())[:8]
     in_file = f"/tmp/input_{job_id}.mp4"
@@ -43,7 +44,13 @@ def process_video(
                     f.write(chunk)
 
         if not text:
-            return FileResponse(in_file, media_type="video/mp4", filename=f"video_{job_id}.mp4")
+            # Inline streaming so it plays inside <video> player
+            return FileResponse(
+                in_file,
+                media_type="video/mp4",
+                content_disposition_type="attachment" if download else "inline",
+                filename=f"video_{job_id}.mp4" if download else None
+            )
 
         # Color & Opacity
         clean_color = color.replace('#', '')
@@ -57,7 +64,7 @@ def process_video(
         elif font_family == "digital":
             fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
-        # Position mapping
+        # Positions
         pos_dict = {
             "center": ("(w-text_w)/2", "(h-text_h)/2"),
             "bottom-right": ("w-text_w-30", "h-text_h-30"),
@@ -67,7 +74,7 @@ def process_video(
         }
         base_x, base_y = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
 
-        # Styles (Shadow, Outlines, Boxes, Neon)
+        # Styles
         style_opts = ""
         if style == "shadow":
             style_opts = ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
@@ -84,7 +91,6 @@ def process_video(
 
         safe_text = text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:").replace("%", "\\%")
 
-        # Movement Expressions
         ticker_x = "w-mod(t*160\\,w+text_w)"
         ticker_y = "h-text_h-20"
         diag_x = "w-text_w-mod(t*55\\,w)"
@@ -97,7 +103,6 @@ def process_video(
             st = custom_style if custom_style is not None else style_opts
             return f"drawtext=fontfile='{fontfile_path}':text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:x={x}:y={y}{st}"
 
-        # Exact Effects implementation
         if effect == "static":
             filters.append(make_filter(base_x, base_y))
         elif effect == "ticker":
@@ -111,21 +116,20 @@ def process_video(
             filters.append(make_filter(diag_x, diag_y))
             filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
         elif effect == "static_diagonal_ticker":
-            # 1. Top Fixed
             filters.append(make_filter("(w-text_w)/2", "25"))
-            # 2. Diagonal Floating
             filters.append(make_filter(diag_x, diag_y))
-            # 3. Running Bottom Ticker
             filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
         elif effect == "random_minute":
             filters.append(make_filter(random_x, random_y))
 
         combined_vf = ",".join(filters)
 
+        # Faststart allows streaming/previewing video immediately inside web browsers
         encoding_opts = [
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-preset", "ultrafast",
+            "-movflags", "+faststart",
             "-crf", "28" if auto_compress else "22",
             "-c:a", "copy"
         ]
@@ -136,7 +140,13 @@ def process_video(
         if os.path.exists(in_file):
             os.remove(in_file)
 
-        return FileResponse(out_file, media_type="video/mp4", filename=f"watermarked_{job_id}.mp4")
+        # content_disposition_type="inline" allows video to play in browser / embedded HTML5 player
+        return FileResponse(
+            out_file,
+            media_type="video/mp4",
+            content_disposition_type="attachment" if download else "inline",
+            filename=f"watermarked_{job_id}.mp4" if download else None
+        )
 
     except Exception as e:
         if os.path.exists(in_file):
