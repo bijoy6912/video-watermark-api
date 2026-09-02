@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 import subprocess, os, uuid, requests
 
 app = FastAPI()
@@ -13,9 +14,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+os.makedirs("/tmp/videos", exist_ok=True)
+app.mount("/videos", StaticFiles(directory="/tmp/videos"), name="videos")
+
 @app.get("/")
 def home():
-    return {"status": "Video Watermark Server is Running!"}
+    return {"status": "Video Engine Running!"}
 
 @app.get("/process")
 def process_video(
@@ -28,43 +32,31 @@ def process_video(
     position: str = Query("center"),
     style: str = Query("shadow"),
     effect: str = Query("static"),
-    auto_compress: bool = Query(False),
-    download: bool = Query(False)  # नया पैरामीटर: Preview vs Download के लिए
+    auto_compress: bool = Query(False)
 ):
     job_id = str(uuid.uuid4())[:8]
     in_file = f"/tmp/input_{job_id}.mp4"
-    out_file = f"/tmp/output_{job_id}.mp4"
+    out_file = f"/tmp/videos/{job_id}.mp4"
 
     try:
+        # Download with stream
         headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(video_url, headers=headers, stream=True, timeout=600)
+        r = requests.get(video_url, headers=headers, stream=True, timeout=300)
         with open(in_file, 'wb') as f:
             for chunk in r.iter_content(chunk_size=2*1024*1024):
                 if chunk:
                     f.write(chunk)
 
-        if not text:
-            # Inline streaming so it plays inside <video> player
-            return FileResponse(
-                in_file,
-                media_type="video/mp4",
-                content_disposition_type="attachment" if download else "inline",
-                filename=f"video_{job_id}.mp4" if download else None
-            )
-
-        # Color & Opacity
         clean_color = color.replace('#', '')
         alpha_hex = format(int(opacity * 255), '02x')
         font_color = f"0x{clean_color}{alpha_hex}"
 
-        # Fonts
         fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         if font_family == "cinematic":
             fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
         elif font_family == "digital":
             fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
-        # Positions
         pos_dict = {
             "center": ("(w-text_w)/2", "(h-text_h)/2"),
             "bottom-right": ("w-text_w-30", "h-text_h-30"),
@@ -74,7 +66,6 @@ def process_video(
         }
         base_x, base_y = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
 
-        # Styles
         style_opts = ""
         if style == "shadow":
             style_opts = ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
@@ -124,33 +115,27 @@ def process_video(
 
         combined_vf = ",".join(filters)
 
-        # Faststart allows streaming/previewing video immediately inside web browsers
-        encoding_opts = [
+        # High-speed ultrafast with faststart header placement
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", in_file,
+            "-vf", combined_vf,
             "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
             "-preset", "ultrafast",
+            "-crf", "28" if auto_compress else "23",
+            "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            "-crf", "28" if auto_compress else "22",
-            "-c:a", "copy"
+            "-c:a", "copy",
+            out_file
         ]
-
-        cmd = ["ffmpeg", "-y", "-i", in_file, "-vf", combined_vf] + encoding_opts + [out_file]
         subprocess.run(cmd, check=True)
 
         if os.path.exists(in_file):
             os.remove(in_file)
 
-        # content_disposition_type="inline" allows video to play in browser / embedded HTML5 player
-        return FileResponse(
-            out_file,
-            media_type="video/mp4",
-            content_disposition_type="attachment" if download else "inline",
-            filename=f"watermarked_{job_id}.mp4" if download else None
-        )
+        return {"status": "success", "file_url": f"/videos/{job_id}.mp4"}
 
     except Exception as e:
         if os.path.exists(in_file):
             os.remove(in_file)
-        if os.path.exists(out_file):
-            os.remove(out_file)
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
