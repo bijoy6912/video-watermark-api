@@ -22,12 +22,12 @@ def process_video(
     video_url: str = Query(...),
     text: str = Query(""),
     font_size: int = Query(26),
-    font_family: str = Query("Default Sans"),
+    font_family: str = Query("default"),
     opacity: float = Query(1.0),
     color: str = Query("FFFFFF"),
     position: str = Query("center"),
     style: str = Query("shadow"),
-    motion: str = Query("static"),
+    effect: str = Query("static"),
     auto_compress: bool = Query(False)
 ):
     job_id = str(uuid.uuid4())[:8]
@@ -45,53 +45,82 @@ def process_video(
         if not text:
             return FileResponse(in_file, media_type="video/mp4", filename=f"video_{job_id}.mp4")
 
-        # Hex Color with Alpha
+        # Color & Opacity
         clean_color = color.replace('#', '')
         alpha_hex = format(int(opacity * 255), '02x')
         font_color = f"0x{clean_color}{alpha_hex}"
 
-        # Position & Motion Formulas (with properly escaped commas for FFmpeg)
-        if motion == "bottom_ticker":
-            x_expr = "w-mod(t*160\\,w+text_w)"
-            y_expr = "h-text_h-20"
-        elif motion == "diagonal_move":
-            x_expr = "w-text_w-mod(t*50\\,w)"
-            y_expr = "h-text_h-mod(t*35\\,h)"
-        elif motion == "random":
-            # Bounces position across corners cleanly
-            x_expr = "if(mod(floor(t/6)\\,2)\\,40\\,w-text_w-40)"
-            y_expr = "if(mod(floor(t/12)\\,2)\\,40\\,h-text_h-40)"
-        else:
-            # Static Positions
-            pos_dict = {
-                "center": ("(w-text_w)/2", "(h-text_h)/2"),
-                "south_east": ("w-text_w-30", "h-text_h-30"),
-                "south_west": ("30", "h-text_h-30"),
-                "north_east": ("w-text_w-30", "30"),
-                "north_west": ("30", "30"),
-                "north": ("(w-text_w)/2", "30"),
-                "south": ("(w-text_w)/2", "h-text_h-30")
-            }
-            x_expr, y_expr = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
+        # Fonts
+        fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if font_family == "cinematic":
+            fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+        elif font_family == "digital":
+            fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
-        # Style Options
+        # Position mapping
+        pos_dict = {
+            "center": ("(w-text_w)/2", "(h-text_h)/2"),
+            "bottom-right": ("w-text_w-30", "h-text_h-30"),
+            "bottom-left": ("30", "h-text_h-30"),
+            "top-right": ("w-text_w-30", "30"),
+            "top-left": ("30", "30")
+        }
+        base_x, base_y = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
+
+        # Styles (Shadow, Outlines, Boxes, Neon)
         style_opts = ""
         if style == "shadow":
             style_opts = ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
         elif style == "outline":
             style_opts = ":bordercolor=black:borderw=3"
-        elif style == "box_dark":
-            style_opts = ":box=1:boxcolor=black@0.65:boxborderw=8"
-        elif style == "box_light":
-            style_opts = ":box=1:boxcolor=white@0.8:boxborderw=8"
+        elif style == "outline_white":
+            style_opts = ":bordercolor=white:borderw=3"
+        elif style == "box_black":
+            style_opts = ":box=1:boxcolor=black@0.75:boxborderw=8"
+        elif style == "box_red":
+            style_opts = ":box=1:boxcolor=red@0.75:boxborderw=8"
+        elif style == "neon":
+            style_opts = ":shadowcolor=cyan@0.8:shadowx=0:shadowy=0:bordercolor=cyan:borderw=2"
 
-        # Safe Escaped Text
         safe_text = text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:").replace("%", "\\%")
 
-        # Use Installed System Font Path
-        fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        
-        drawtext_filter = f"drawtext=fontfile='{fontfile_path}':text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:x={x_expr}:y={y_expr}{style_opts}"
+        # Movement Expressions
+        ticker_x = "w-mod(t*160\\,w+text_w)"
+        ticker_y = "h-text_h-20"
+        diag_x = "w-text_w-mod(t*55\\,w)"
+        diag_y = "h-text_h-mod(t*35\\,h)"
+        random_x = "if(mod(floor(t/60)\\,2)\\,30\\,w-text_w-30)"
+        random_y = "if(mod(floor(t/120)\\,2)\\,30\\,h-text_h-30)"
+
+        filters = []
+        def make_filter(x, y, custom_style=None):
+            st = custom_style if custom_style is not None else style_opts
+            return f"drawtext=fontfile='{fontfile_path}':text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:x={x}:y={y}{st}"
+
+        # Exact Effects implementation
+        if effect == "static":
+            filters.append(make_filter(base_x, base_y))
+        elif effect == "ticker":
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "diagonal":
+            filters.append(make_filter(diag_x, diag_y))
+        elif effect == "static_ticker":
+            filters.append(make_filter(base_x, base_y))
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "diagonal_ticker":
+            filters.append(make_filter(diag_x, diag_y))
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "static_diagonal_ticker":
+            # 1. Top Fixed
+            filters.append(make_filter("(w-text_w)/2", "25"))
+            # 2. Diagonal Floating
+            filters.append(make_filter(diag_x, diag_y))
+            # 3. Running Bottom Ticker
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "random_minute":
+            filters.append(make_filter(random_x, random_y))
+
+        combined_vf = ",".join(filters)
 
         encoding_opts = [
             "-c:v", "libx264",
@@ -101,7 +130,7 @@ def process_video(
             "-c:a", "copy"
         ]
 
-        cmd = ["ffmpeg", "-y", "-i", in_file, "-vf", drawtext_filter] + encoding_opts + [out_file]
+        cmd = ["ffmpeg", "-y", "-i", in_file, "-vf", combined_vf] + encoding_opts + [out_file]
         subprocess.run(cmd, check=True)
 
         if os.path.exists(in_file):
