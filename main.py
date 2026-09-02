@@ -2,7 +2,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-import subprocess, os, uuid, json
+import subprocess, os, uuid
 
 app = FastAPI()
 
@@ -19,9 +19,9 @@ app.mount("/videos", StaticFiles(directory="/tmp/videos"), name="videos")
 
 @app.get("/")
 def home():
-    return {"status": "Superfast Engine Active"}
+    return {"status": "Superfast Watermark & Trailer Engine Active"}
 
-# ====== 1. LIGHTNING FAST TRAILER GENERATOR (Uses Stream Copy - Takes 3 to 5 sec) ======
+# ====== 1. SUPERFAST TRAILER GENERATOR ======
 @app.get("/generate-trailer")
 def generate_trailer(
     video_url: str = Query(...),
@@ -34,7 +34,6 @@ def generate_trailer(
     segment_files = []
 
     try:
-        # 1. Ultra-fast duration check using remote ffprobe
         probe_cmd = [
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
@@ -55,7 +54,6 @@ def generate_trailer(
         else:
             points = [5, total_dur * 0.25, total_dur * 0.5, total_dur * 0.75, max(10, total_dur - clip_len - 5)]
 
-        # 2. Cut clips without re-encoding (-c copy) -> Instant Speed!
         with open(concat_list, "w") as f_list:
             for idx, st in enumerate(points):
                 seg_path = f"/tmp/seg_{job_id}_{idx}.mp4"
@@ -73,7 +71,6 @@ def generate_trailer(
                 segment_files.append(seg_path)
                 f_list.write(f"file '{seg_path}'\n")
 
-        # 3. Fast merge
         merge_cmd = [
             "ffmpeg", "-y",
             "-f", "concat", "-safe", "0",
@@ -97,7 +94,7 @@ def generate_trailer(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ====== 2. HIGH-SPEED WATERMARK (Direct Stream Pipeline) ======
+# ====== 2. ADVANCED WATERMARK (With All Animations & Fast Streaming) ======
 @app.get("/process")
 def process_video(
     video_url: str = Query(...),
@@ -118,8 +115,14 @@ def process_video(
         clean_color = color.replace('#', '')
         alpha_hex = format(int(opacity * 255), '02x')
         font_color = f"0x{clean_color}{alpha_hex}"
-        fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
+        fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if font_family == "cinematic":
+            fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+        elif font_family == "digital":
+            fontfile_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+
+        # Position Mapping
         pos_dict = {
             "center": ("(w-text_w)/2", "(h-text_h)/2"),
             "bottom-right": ("w-text_w-30", "h-text_h-30"),
@@ -129,18 +132,69 @@ def process_video(
         }
         base_x, base_y = pos_dict.get(position, ("(w-text_w)/2", "(h-text_h)/2"))
 
-        safe_text = text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:").replace("%", "\\%")
-        drawtext_filter = f"drawtext=fontfile='{fontfile_path}':text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:x={base_x}:y={base_y}:shadowcolor=black@0.9:shadowx=3:shadowy=3"
+        # Styles (Shadow, Outlines, Boxes, Neon)
+        style_opts = ""
+        if style == "shadow":
+            style_opts = ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
+        elif style == "outline":
+            style_opts = ":bordercolor=black:borderw=3"
+        elif style == "outline_white":
+            style_opts = ":bordercolor=white:borderw=3"
+        elif style == "box_black":
+            style_opts = ":box=1:boxcolor=black@0.75:boxborderw=8"
+        elif style == "box_red":
+            style_opts = ":box=1:boxcolor=red@0.75:boxborderw=8"
+        elif style == "neon":
+            style_opts = ":shadowcolor=cyan@0.8:shadowx=0:shadowy=0:bordercolor=cyan:borderw=2"
 
-        # Stream directly without saving original full file to disk first
+        safe_text = text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:").replace("%", "\\%")
+
+        # Movement Formulas with Escaped Commas
+        ticker_x = "w-mod(t*160\\,w+text_w)"
+        ticker_y = "h-text_h-20"
+        diag_x = "w-text_w-mod(t*55\\,w)"
+        diag_y = "h-text_h-mod(t*35\\,h)"
+        random_x = "if(mod(floor(t/60)\\,2)\\,30\\,w-text_w-30)"
+        random_y = "if(mod(floor(t/120)\\,2)\\,30\\,h-text_h-30)"
+
+        filters = []
+        def make_filter(x, y, custom_style=None):
+            st = custom_style if custom_style is not None else style_opts
+            return f"drawtext=fontfile='{fontfile_path}':text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:x={x}:y={y}{st}"
+
+        # Animations Handler
+        if effect == "static":
+            filters.append(make_filter(base_x, base_y))
+        elif effect == "ticker":
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "diagonal":
+            filters.append(make_filter(diag_x, diag_y))
+        elif effect == "static_ticker":
+            filters.append(make_filter(base_x, base_y))
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "diagonal_ticker":
+            filters.append(make_filter(diag_x, diag_y))
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "static_diagonal_ticker":
+            # 1. Fixed Top
+            filters.append(make_filter("(w-text_w)/2", "25"))
+            # 2. Moving Diagonal
+            filters.append(make_filter(diag_x, diag_y))
+            # 3. Running Bottom Ticker
+            filters.append(make_filter(ticker_x, ticker_y, ":box=1:boxcolor=black@0.65:boxborderw=6"))
+        elif effect == "random_minute":
+            filters.append(make_filter(random_x, random_y))
+
+        combined_vf = ",".join(filters)
+
         cmd = [
             "ffmpeg", "-y",
             "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "-i", video_url,
-            "-vf", drawtext_filter,
+            "-vf", combined_vf,
             "-c:v", "libx264",
             "-preset", "ultrafast",
-            "-crf", "28",
+            "-crf", "28" if auto_compress else "23",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             "-c:a", "copy",
